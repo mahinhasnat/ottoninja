@@ -1,182 +1,305 @@
-#include <SoftwareSerial.h>
-#include <Servo.h>
+// ============================================
+//   OTTO NINJA — ESP32 Dev Kit
+//   4 Servo + HC-SR04 Ultrasonic
+//   RemoteXY WiFi AP Mode
+// ============================================
 
-SoftwareSerial BT(2, 3);
+#define REMOTEXY_MODE__ESP32WIFI_LIB_POINT
+#include <WiFi.h>
+#include <RemoteXY.h>
+#include <ESP32Servo.h>
 
+#define REMOTEXY_WIFI_SSID     "OTTO_NINJA"
+#define REMOTEXY_WIFI_PASSWORD "12345678"
+#define REMOTEXY_SERVER_PORT   6377
+
+// ── RemoteXY Config ──────────────────────────
+#pragma pack(push, 1)
+uint8_t RemoteXY_CONF[] = {
+  255, 1, 0, 0, 0, 58, 0, 17, 0, 0,
+  0, 0, 31, 1, 106, 200, 200, 84, 1,
+  1, 4, 0, 7, 92, 40, 40, 200, 31,
+  31, 79, 75, 0, 1, 0, 52, 26, 12,
+  12, 200, 31, 66, 0, 1, 0, 68, 26,
+  12, 12, 200, 31, 88, 0, 1, 0, 52,
+  42, 12, 12, 200, 31, 89, 0, 1, 0,
+  68, 42, 12, 12, 200, 31, 65, 0
+};
+
+struct {
+  int8_t  J_x;
+  int8_t  J_y;
+  uint8_t button_B;
+  uint8_t button_X;
+  uint8_t button_Y;
+  uint8_t button_A;
+  uint8_t connect_flag;
+} RemoteXY;
+#pragma pack(pop)
+
+// ── Servo Pins ───────────────────────────────
+const uint8_t ServoLeftFootPin  = 13;
+const uint8_t ServoRightFootPin = 12;
+const uint8_t ServoLeftLegPin   = 14;
+const uint8_t ServoRightLegPin  = 27;
+
+// ── Ultrasonic Pins ──────────────────────────
+const uint8_t TRIG_PIN = 5;
+const uint8_t ECHO_PIN = 18;
+#define OBSTACLE_DISTANCE 15  // cm — stop if closer than this
+
+// ── Servo Objects ────────────────────────────
 Servo myservoLeftFoot;
 Servo myservoRightFoot;
 Servo myservoLeftLeg;
 Servo myservoRightLeg;
-Servo myservoLeftArm;
-Servo myservoRightArm;
-Servo myservoHead;
 
-const uint8_t ServoLeftFootPin  = 5;
-const uint8_t ServoRightFootPin = 6;
-const uint8_t ServoLeftLegPin   = 7;
-const uint8_t ServoRightLegPin  = 8;
-const uint8_t ServoLeftArmPin   = 9;
-const uint8_t ServoRightArmPin  = 10;
-const uint8_t ServoHeadPin      = 11;
+// ── Tuning Variables ─────────────────────────
+int LFFWRS = 20, RFFWRS = 20;
+int LFBWRS = 20, RFBWRS = 20;
 
-int LFFWRS = 20;
-int RFFWRS = 20;
-int LFBWRS = 20;
-int RFBWRS = 20;
-
-int LA0  = 60;
-int RA0  = 120;
-int LATL = 100;
-int RATL = 175;
-int LATR = 5;
-int RATR = 80;
-int LA1  = 180;
-int RA1  = 0;
+int LA0  = 60,  RA0  = 120;  // Standing position
+int LATL = 100, RATL = 175;  // Tilt left
+int LATR = 5,   RATR = 80;   // Tilt right
 
 int ModeCounter = 0;
-char btCommand = 'S';
-int J_x = 0, J_y = 0;
 
-void setup() {
-  Serial.begin(9600);
-  BT.begin(9600);
+// ── Ultrasonic: Get Distance (cm) ────────────
+long getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
 
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000); // timeout 30ms
+  long distance = duration * 0.034 / 2;
+  return distance;
+}
+
+// ── Servo Attach / Detach ────────────────────
+void attachServos() {
   myservoLeftFoot.attach(ServoLeftFootPin,  544, 2400);
-  myservoRightFoot.attach(ServoRightFootPin,544, 2400);
-  myservoLeftLeg.attach(ServoLeftLegPin,    544, 2400);
+  myservoRightFoot.attach(ServoRightFootPin, 544, 2400);
+  myservoLeftLeg.attach(ServoLeftLegPin,   544, 2400);
   myservoRightLeg.attach(ServoRightLegPin,  544, 2400);
-  myservoLeftArm.attach(ServoLeftArmPin,    544, 2400);
-  myservoRightArm.attach(ServoRightArmPin,  544, 2400);
-  myservoHead.attach(ServoHeadPin,          544, 2400);
-
-  myservoHead.write(90);
-  myservoLeftArm.write(90);
-  myservoRightArm.write(90);
-  delay(300);
-  myservoLeftFoot.write(90);
-  myservoRightFoot.write(90);
-  myservoLeftLeg.write(LA0);
-  myservoRightLeg.write(RA0);
-  delay(300);
-  myservoLeftArm.write(180);
-  myservoRightArm.write(0);
-  delay(500);
 }
 
-void loop() {
-  if (BT.available()) {
-    btCommand = BT.read();
-  }
-
-  if (btCommand == 'X') { NinjaSetRoll(); ModeCounter = 1; }
-  if (btCommand == 'Y') { NinjaSetWalk(); ModeCounter = 0; }
-
-  if (btCommand == 'A') NinjaLeftArm();
-  else                  NinjaLeftArmDown();
-
-  if (btCommand == 'C') NinjaRightArm();
-  else                  NinjaRightArmDown();
-
-  if (ModeCounter == 0) {
-    if      (btCommand == 'F') NinjaWalkForward(0);
-    else if (btCommand == 'B') NinjaWalkBackward(0);
-    else if (btCommand == 'L') NinjaWalkForward(-70);
-    else if (btCommand == 'R') NinjaWalkForward(70);
-    else if (btCommand == 'S') NinjaWalkStop();
-  }
-
-  if (ModeCounter == 1) {
-    if      (btCommand == 'F') NinjaRollForward();
-    else if (btCommand == 'B') NinjaRollBackward();
-    else if (btCommand == 'S') NinjaRollStop();
-  }
+void detachServos() {
+  myservoLeftFoot.detach();
+  myservoRightFoot.detach();
+  myservoLeftLeg.detach();
+  myservoRightLeg.detach();
 }
 
-void NinjaSetWalk() {
-  myservoLeftLeg.write(LA0);
-  myservoRightLeg.write(RA0);
-  delay(200);
-}
-
-void NinjaSetRoll() {
-  myservoLeftLeg.write(LA1);
-  myservoRightLeg.write(RA1);
-  delay(200);
-}
-
-void NinjaWalkForward(int turn) {
-  int lt = map(turn, 100, -100, 200, 700);
-  int rt = map(turn, 100, -100, 700, 200);
-
-  myservoLeftLeg.write(LATR);
-  myservoRightLeg.write(RATR);
-  delay(250);
-
-  myservoLeftFoot.write(90 + LFFWRS);
-  delay(rt);
-  myservoLeftFoot.write(90);
-
-  myservoLeftLeg.write(LATL);
-  myservoRightLeg.write(RATL);
-  delay(250);
-
-  myservoRightFoot.write(90 - RFFWRS);
-  delay(lt);
-  myservoRightFoot.write(90);
-
-  myservoLeftLeg.write(LA0);
-  myservoRightLeg.write(RA0);
-  delay(50);
-}
-
-void NinjaWalkBackward(int turn) {
-  int lt = map(turn, 100, -100, 200, 700);
-  int rt = map(turn, 100, -100, 700, 200);
-
-  myservoLeftLeg.write(LATR);
-  myservoRightLeg.write(RATR);
-  delay(250);
-
-  myservoLeftFoot.write(90 - LFBWRS);
-  delay(rt);
-  myservoLeftFoot.write(90);
-
-  myservoLeftLeg.write(LATL);
-  myservoRightLeg.write(RATL);
-  delay(250);
-
-  myservoRightFoot.write(90 + RFBWRS);
-  delay(lt);
-  myservoRightFoot.write(90);
-
-  myservoLeftLeg.write(LA0);
-  myservoRightLeg.write(RA0);
-  delay(50);
-}
-
+// ── Motion: Stop ─────────────────────────────
 void NinjaWalkStop() {
+  attachServos();
   myservoLeftFoot.write(90);
   myservoRightFoot.write(90);
   myservoLeftLeg.write(LA0);
   myservoRightLeg.write(RA0);
+  delay(100);
 }
 
-void NinjaRollForward() {
+// ── Motion: Set Walk Pose ────────────────────
+void NinjaSetWalk() {
+  attachServos();
+  myservoLeftLeg.write(LA0);
+  myservoRightLeg.write(RA0);
+  myservoLeftFoot.write(90);
+  myservoRightFoot.write(90);
+  delay(200);
+}
+
+// ── Motion: Forward ──────────────────────────
+void NinjaWalkForward(int lt, int rt) {
+  attachServos();
+
+  // Step 1
+  myservoLeftLeg.write(RATL);
+  myservoRightLeg.write(RATR);
+  delay(rt);
   myservoLeftFoot.write(90 + LFFWRS);
+  delay(50);
+
+  // Step 2
+  myservoLeftLeg.write(LATL);
+  myservoRightLeg.write(LATR);
+  delay(lt);
   myservoRightFoot.write(90 - RFFWRS);
-}
+  delay(50);
 
-void NinjaRollBackward() {
-  myservoLeftFoot.write(90 - LFBWRS);
-  myservoRightFoot.write(90 + RFBWRS);
-}
-
-void NinjaRollStop() {
+  // Neutral
+  myservoLeftLeg.write(LA0);
+  myservoRightLeg.write(RA0);
   myservoLeftFoot.write(90);
   myservoRightFoot.write(90);
 }
 
-void NinjaLeftArm()      { myservoLeftArm.write(0); }
-void NinjaLeftArmDown()  { myservoLeftArm.write(180); }
-void NinjaRightArm()     { myservoRightArm.write(180); }
-void NinjaRightArmDown() { myservoRightArm.write(0); }
+// ── Motion: Backward ─────────────────────────
+void NinjaWalkBackward(int lt, int rt) {
+  attachServos();
+
+  myservoLeftLeg.write(RATL);
+  myservoRightLeg.write(RATR);
+  delay(rt);
+  myservoLeftFoot.write(90 - LFBWRS);
+  delay(50);
+
+  myservoLeftLeg.write(LATL);
+  myservoRightLeg.write(LATR);
+  delay(lt);
+  myservoRightFoot.write(90 + RFBWRS);
+  delay(50);
+
+  myservoLeftLeg.write(LA0);
+  myservoRightLeg.write(RA0);
+  myservoLeftFoot.write(90);
+  myservoRightFoot.write(90);
+}
+
+// ── Motion: Turn Left ────────────────────────
+void NinjaTurnLeft() {
+  attachServos();
+
+  myservoLeftLeg.write(LATL);
+  myservoRightLeg.write(LATR);
+  delay(300);
+  myservoLeftFoot.write(90 - LFFWRS);
+  myservoRightFoot.write(90 - RFFWRS);
+  delay(200);
+
+  myservoLeftLeg.write(LA0);
+  myservoRightLeg.write(RA0);
+  myservoLeftFoot.write(90);
+  myservoRightFoot.write(90);
+}
+
+// ── Motion: Turn Right ───────────────────────
+void NinjaTurnRight() {
+  attachServos();
+
+  myservoLeftLeg.write(RATL);
+  myservoRightLeg.write(RATR);
+  delay(300);
+  myservoLeftFoot.write(90 + LFFWRS);
+  myservoRightFoot.write(90 + RFFWRS);
+  delay(200);
+
+  myservoLeftLeg.write(LA0);
+  myservoRightLeg.write(RA0);
+  myservoLeftFoot.write(90);
+  myservoRightFoot.write(90);
+}
+
+// ── Auto Obstacle Avoid ──────────────────────
+void obstacleAvoid() {
+  long dist = getDistance();
+  if (dist > 0 && dist < OBSTACLE_DISTANCE) {
+    NinjaWalkStop();
+    delay(300);
+    // Turn right to avoid
+    NinjaTurnRight();
+    NinjaTurnRight();
+    delay(200);
+  }
+}
+
+// ── Setup ────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+
+  // Ultrasonic
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  // Boot pose
+  attachServos();
+  myservoLeftFoot.write(90);
+  myservoRightFoot.write(90);
+  myservoLeftLeg.write(LA0);
+  myservoRightLeg.write(RA0);
+  delay(500);
+  detachServos();
+
+  RemoteXY_Init();
+  Serial.println("Otto Ninja ESP32 Ready!");
+}
+
+// ── Loop ─────────────────────────────────────
+void loop() {
+  RemoteXY_Handler();
+
+  // Button Y = Walk Mode (normal)
+  if (RemoteXY.button_Y == 1) {
+    NinjaSetWalk();
+    ModeCounter = 0;
+  }
+
+  // Button X = Obstacle Avoid Auto Mode
+  if (RemoteXY.button_X == 1) {
+    ModeCounter = 2;
+  }
+
+  // Button A = Turn Left manual
+  if (RemoteXY.button_A == 1) {
+    NinjaTurnLeft();
+  }
+
+  // Button B = Turn Right manual
+  if (RemoteXY.button_B == 1) {
+    NinjaTurnRight();
+  }
+
+  // ── Mode 0: Manual Joystick Walk ──
+  if (ModeCounter == 0) {
+
+    // Dead zone
+    if ((RemoteXY.J_x >= -10) && (RemoteXY.J_x <= 10) &&
+        (RemoteXY.J_y >= -10) && (RemoteXY.J_y <= 10)) {
+      NinjaWalkStop();
+    }
+
+    // Forward
+    else if (RemoteXY.J_y > 10) {
+      int lt = map(RemoteXY.J_x, 100, -100, 200, 700);
+      int rt = map(RemoteXY.J_x, 100, -100, 700, 200);
+      NinjaWalkForward(lt, rt);
+    }
+
+    // Backward
+    else if (RemoteXY.J_y < -10) {
+      int lt = map(RemoteXY.J_x, 100, -100, 200, 700);
+      int rt = map(RemoteXY.J_x, 100, -100, 700, 200);
+      NinjaWalkBackward(lt, rt);
+    }
+
+    // Turn Left only
+    else if (RemoteXY.J_x < -10) {
+      NinjaTurnLeft();
+    }
+
+    // Turn Right only
+    else if (RemoteXY.J_x > 10) {
+      NinjaTurnRight();
+    }
+  }
+
+  // ── Mode 2: Auto Obstacle Avoid ──
+  if (ModeCounter == 2) {
+    long dist = getDistance();
+    Serial.print("Distance: ");
+    Serial.println(dist);
+
+    if (dist > 0 && dist < OBSTACLE_DISTANCE) {
+      NinjaWalkStop();
+      delay(300);
+      NinjaTurnRight();
+      NinjaTurnRight();
+    } else {
+      // Walk straight forward
+      NinjaWalkForward(250, 250);
+    }
+  }
+}
